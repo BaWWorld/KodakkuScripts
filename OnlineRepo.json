@@ -14,11 +14,12 @@
   {
     "Name": "糖豆人第三关画图",
     "Guid": "3a9a6d4c-5f3c-4d6d-9f0d-100000000001",
-    "Version": "0.2.0.3",
+    "Version": "0.3.0.0",
     "Author": "MYY",
     "DownloadUrl": "https://raw.githubusercontent.com/BaWWorld/KodakkuScripts/main/VFALLGUYS_Third_Legacy_AOE.cs",
     "Note": "糖豆人第三关画图，基于VFALLGUYS的AOE绘图数据进行编写，纯AI编写。",
-    "UpdateTime": "2026-10-10T17:47:09Z",
+    "UpdateInfo": "尝试不再依赖循环绘图。尝试优化代码。",
+    "UpdateTime": "2026-10-10T18:04:08Z",
     "TerritoryIds": [
       1165
     ]

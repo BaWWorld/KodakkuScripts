@@ -6,52 +6,48 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using System;
-namespace VF3_Legacy_AOE
+namespace VF3_AOE
 {
 
-[ScriptType(name: "糖豆人第三关画图", territorys: [1165], guid: "3a9a6d4c-5f3c-4d6d-9f0d-100000000001", version: "0.2.0.3", author: "MYY", note: "糖豆人第三关画图，基于VFALLGUYS的AOE绘图数据进行编写，纯AI编写。")]
-public class VFALLGUYS_Third_Legacy_AOE : IDisposable
+[ScriptType(name: "糖豆人第三关画图", territorys: [1165], guid: "3a9a6d4c-5f3c-4d6d-9f0d-100000000001", version: "0.3.0.0", author: "MYY", note: "糖豆人第三关画图，基于VFALLGUYS的AOE绘图数据进行编写，纯AI编写。", updateInfo: "尝试不再依赖循环绘图。尝试优化代码。")]
+public class VFALLGUYS_Third_AOE : IDisposable
 {
-    private const string Prefix = "VFALLGUYS_Third_Legacy_AOE_";
+    private const string Prefix = "VFALLGUYS_Third_AOE_";
     private readonly object gate = new();
     private ScriptAccessory? accessory;
     private GameEvents events = new();
     private Map3? map;
-    private string? frame;
-    private DateTime nextRefresh;
+    private DateTime lastEvent;
     private DateTime nextWarning;
-    private bool[] drawings = [];
-    private int drawingCount;
-    private string drawPrefix = Prefix;
-    private bool visible;
-    private const bool ShowUnsynced = true;
-    private const float PreviewSeconds = 2.5f;
+    private readonly Dictionary<string,DateTime> drawings = new(66);
+    private readonly Dictionary<(uint,int),DateTime> effectsSeen=new(66);
+    private readonly string[] drawNames=Enumerable.Range(0,66).Select(i=>Prefix+"AOE_"+i).ToArray();
+    private readonly string[] drawPatterns=Enumerable.Range(0,66).Select(i=>"^"+Prefix+"AOE_"+i+"$").ToArray();
+    private readonly DateTime[] firstLast=new DateTime[2];
+    private readonly double[] firstCycle={2.56,2.56};
+    private readonly int[] firstSequence=new int[2];
+    [UserSetting("AOE 预览秒数（0.3—8）")] public float PreviewSeconds { get; set; } = 2.5f;
+    [UserSetting("输出机制同步日志")] public bool DebugLogging { get; set; } = false;
 
     public void Init(ScriptAccessory sa)
     {
         Dispose();
         lock (gate)
         {
-            accessory = sa; events = new(); nextRefresh = default; nextWarning = default;
+            accessory = sa; events = new(); lastEvent = default; Array.Clear(firstLast); Array.Clear(firstSequence); firstCycle[0]=firstCycle[1]=2.56;
+            Service.Log = sa.Log;
             map = new Map3(events);
-            drawings = new bool[map.AOEs.Count];
-            drawingCount = 0;
-            drawPrefix = Prefix + Guid.NewGuid().ToString("N") + "_";
-            visible = false;
-            frame = sa.Method.RegistFrameworkUpdateAction(Tick, true);
+            // Predictions are emitted only from game events, never from a frame timer.
         }
     }
     public void Dispose()
     {
         lock (gate)
         {
-            visible = false;
-            
-            if (frame != null && accessory != null) accessory.Method.UnregistFrameworkUpdateAction(frame);
-            frame = null; map?.Dispose(); map = null;
-            accessory?.Method.RemoveDraw("^" + drawPrefix);
+            map?.Dispose(); map = null;
+            accessory?.Method.RemoveDraw("^" + Prefix);
             accessory?.Method.ClearFrameworkUpdateAction(this);
-            drawings = []; drawingCount = 0; accessory = null;
+            drawings.Clear(); effectsSeen.Clear();
         }
     }
     [ScriptMethod(name: "第三关机制同步", eventType: EventTypeEnum.ActionEffect, eventCondition: ["ActionId:regex:^(34801|34802|34804|34812|34796|29795)$"], userControl: false)]
@@ -61,6 +57,7 @@ public class VFALLGUYS_Third_Legacy_AOE : IDisposable
 
     private void Observe(Event e, ScriptAccessory sa, bool cast)
     {
+        // Original GameEvents reads caster position, NOT the packet's EffectPosition.
         if (!uint.TryParse(e["ActionId"], out var id)) return;
         Vector3 pos;
         try { if (string.IsNullOrWhiteSpace(e["SourcePosition"])) return; pos = JsonConvert.DeserializeObject<Vector3>(e["SourcePosition"]); }
@@ -68,16 +65,65 @@ public class VFALLGUYS_Third_Legacy_AOE : IDisposable
         lock (gate)
         {
             if (accessory == null) return;
-            if (map == null) return;
-            bool matched = false;
-            foreach (var a in map.AOEs)
+            if(lastEvent!=default && (e.DateTime<lastEvent.AddSeconds(-0.5) || e.DateTime>lastEvent.AddSeconds(20)))
+            { map?.Dispose(); map=new Map3(events); sa.Method.RemoveDraw("^"+Prefix); drawings.Clear(); effectsSeen.Clear(); Array.Clear(firstLast); Array.Clear(firstSequence); firstCycle[0]=firstCycle[1]=2.56; }
+            if (map == null) map = new Map3(events);
+            int matched=-1;
+            float nearest=2.25f;
+            for(int i=0;i<map.AOEs.Count;i++)
             {
-                float dx = pos.X - a.Origin.X, dz = pos.Z - a.Origin.Z;
-                if (dx * dx + dz * dz < 2.25f && MathF.Abs(pos.Y - a.Origin.Y) < 2)
-                { matched = true; break; }
+                var delta=pos-map.AOEs[i].Origin;
+                float distance=delta.X*delta.X+delta.Z*delta.Z;
+                if(distance<nearest && MathF.Abs(delta.Y)<2) {nearest=distance;matched=i;}
             }
-            if (!matched) return;
+            if(matched<0) return;
+            if(!cast)
+            {
+                var key=(id,matched);
+                if(effectsSeen.TryGetValue(key,out var previous) && Math.Abs((e.DateTime-previous).TotalSeconds)<0.2) return;
+                effectsSeen[key]=e.DateTime;
+                if(id==34802 && MathF.Abs(pos.Z-267.5f)<1.5f && MathF.Abs(pos.Y-6)<1.5f)
+                {
+                    int side=pos.X<0?-1:1;
+                    int sideIndex=side<0?0:1;
+                    if(firstLast[sideIndex]!=default)
+                    {
+                        double interval=(e.DateTime-firstLast[sideIndex]).TotalSeconds;
+                        if(interval>1.8 && interval<3.5) firstCycle[sideIndex]=firstCycle[sideIndex]*0.5+interval*0.5;
+                    }
+                    firstLast[sideIndex]=e.DateTime;
+                    double cycle=firstCycle[sideIndex];
+                    // Creation and removal use framework scheduling. Unique names keep
+                    // removal of an older prediction from matching a newer VFX.
+                    // Each finite VFX expires without a per-cycle RemoveDraw.
+                    string nextName=Prefix+"First_"+side+"_"+(++firstSequence[sideIndex]);
+                    // Each side schedules one finite VFX after its own effect.
+                    var dp=sa.Data.GetDefaultDrawProperties();
+                    dp.Name=nextName;dp.Position=new Vector3(side*10,6,267.5f);
+                    dp.Scale=new Vector2(5);dp.FixRotation=true;
+                    dp.Wave=false;
+                    double preview=Math.Clamp(PreviewSeconds,0.3f,1.5f);
+                    dp.Delay=Math.Max(0,(int)((cycle-preview)*1000));
+                    dp.DestoryAt=Math.Max(1,(int)(preview*1000));
+                    dp.ScaleMode=ScaleMode.ByTime;
+                    var color=sa.Data.DefaultDangerColor;
+                    dp.Color=new Vector4(color.X,color.Y,color.Z,0.80f);
+                    sa.Method.SendDraw(DrawModeEnum.Vfx,DrawTypeEnum.Circle,dp);
+                    lastEvent=e.DateTime;
+                    return;
+                }
+                for(int i=0;i<map.AOEs.Count;i++)
+                {
+                    var a=map.AOEs[i];
+                    if(Vector3.DistanceSquared(pos,a.Origin)>=2.25f) continue;
+                    string name=drawNames[i];
+                    if(drawings.Remove(name)) sa.Method.RemoveDraw(drawPatterns[i]);
+                }
+            }
+            map.RouteDiagnostics = DebugLogging;
             if (cast) events.Cast(id,pos); else events.Effect(id,pos);
+            lastEvent = e.DateTime;
+            Tick();
         }
     }
     private void Tick()
@@ -85,56 +131,61 @@ public class VFALLGUYS_Third_Legacy_AOE : IDisposable
         lock (gate)
         {
             var sa = accessory; var m = map; var now = DateTime.Now;
-            if (sa == null || m == null || now < nextRefresh) return;
-            nextRefresh = now.AddMilliseconds(150);
+            if (sa == null || m == null) return;
             try
             {
                 var player = sa.Data.MyObject;
-                if (player == null || player.CurrentHp == 0) { visible=false;  return; }
+                if (player == null || player.CurrentHp == 0) return;
                 var pos = player.Position;
-                visible = pos.Z>=123 && pos.Z<=330 && MathF.Abs(pos.X)<=25;
-                if (!visible) {  return; }
-                if (drawingCount == m.AOEs.Count) return;
+                if(pos.Z<123 || pos.Z>330 || MathF.Abs(pos.X)>25) return;
+                float configuredPreview=Math.Clamp(PreviewSeconds,0.3f,8);
                 for(int i=0;i<m.AOEs.Count;i++)
                 {
-                    if (drawings[i]) continue;
                     var a=m.AOEs[i];
-                    var dp=sa.Data.GetDefaultDrawProperties(); dp.Name=drawPrefix+"AOE_"+i;
+                    if(MathF.Abs(a.Origin.Z-267.5f)<0.1f && MathF.Abs(a.Origin.Y-6)<0.1f) continue;
+                    if(a.NextActivation==default) continue;
+                    float remaining=a.TimeUntilNextActivation(now);
+                    float preview=configuredPreview;
+                    if(MathF.Abs(a.Origin.Z-225.3f)<0.1f && MathF.Abs(a.Origin.Y-14.76f)<0.1f)
+                        preview=Math.Min(preview,1.5f);
+                    if(remaining<=0 || remaining>preview) continue;
+                    // Finite, event-triggered windows. No permanent nodes or render callbacks.
+                    string name=drawNames[i];
+                    if(drawings.TryGetValue(name,out var expires) && now<expires) continue;
+                    var dp=sa.Data.GetDefaultDrawProperties(); dp.Name=name;
+                    // Straight is centred; Rect starts at its origin and would shift the footprint.
                     dp.Position=a.Origin; dp.Scale=a.Type==Map.AOEShape.Square?new Vector2(a.R1*2):new Vector2(a.R1);
-                    dp.Rotation=0; dp.FixRotation=true;
-                    dp.Color=new Vector4(0,0,0,0);
-                    dp.DestoryAt=int.MaxValue;
-                    sa.Method.SendDraw(DrawModeEnum.Default,a.Type==Map.AOEShape.Square?DrawTypeEnum.Straight:DrawTypeEnum.Circle,dp, draw =>
-                    {
-                        lock(gate)
-                        {
-                            float t=a.TimeUntilNextActivation(DateTime.Now);
-                            var color=sa.Data.DefaultDangerColor;
-                            bool synced=a.NextActivation!=default;
-                            float alpha=!visible || !ReferenceEquals(map, m)?0:!synced?(ShowUnsynced?0.15f:0):t>PreviewSeconds?0:t<0.6f?1:0.35f;
-                            draw.Color=synced?new Vector4(color.X,color.Y,color.Z,alpha):new Vector4(0.65f,0.65f,0.65f,alpha);
-                        }
-                    });
-                    drawings[i] = true;
-                    drawingCount++;
+                    dp.Rotation=0; dp.FixRotation=true; dp.Wave=false; dp.Color=sa.Data.DefaultDangerColor;
+                    dp.Color=new Vector4(dp.Color.X,dp.Color.Y,dp.Color.Z,0.80f);
+                    dp.Delay=Math.Max(0,(int)((remaining-preview)*1000));
+                    dp.DestoryAt=Math.Max(1,(int)(MathF.Min(remaining,preview)*1000));
+                    dp.ScaleMode=ScaleMode.ByTime;
+                    sa.Method.SendDraw(DrawModeEnum.Vfx,a.Type==Map.AOEShape.Square?DrawTypeEnum.Straight:DrawTypeEnum.Circle,dp);
+                    drawings[name]=now.AddMilliseconds(dp.Delay+dp.DestoryAt);
                 }
 
             }
             catch(Exception ex)
             {
-                
+
                 if(now>=nextWarning) { nextWarning=now.AddSeconds(5); sa.Log.Error("VF3: "+ex.Message); }
             }
         }
     }
 
 }
+internal static class Service { internal static ScriptAccessory.LogAccessory? Log; }
 public sealed class GameEvents
 {
     public event Action<uint,Vector3>? ActionEffectEvent;
     public event Action<uint,Vector3>? StartCastEvent;
     public void Effect(uint id,Vector3 p)=>ActionEffectEvent?.Invoke(id,p);
     public void Cast(uint id,Vector3 p)=>StartCastEvent?.Invoke(id,p);
+}
+public sealed class DeveloperDiagnostics
+{
+    public bool Enabled;
+    public void Info(string message) { if(Enabled) Service.Log?.Debug(message); }
 }
 
 public class Map : IDisposable {
@@ -187,9 +238,11 @@ public enum AOEShape
 				AOEShape.Circle => ((p.X-Origin.X)*(p.X-Origin.X)+(p.Z-Origin.Z)*(p.Z-Origin.Z)) <= radius * radius,
 				AOEShape.Square => MathF.Max(MathF.Abs(p.X-Origin.X),MathF.Abs(p.Z-Origin.Z)) <= radius,
 				AOEShape.Rect => false,
-				_ => false, 
+				_ => false,
 			};
 		}
+
+
 
 	}public class AOESequence
 	{
@@ -199,13 +252,15 @@ public enum AOEShape
 
 		public int NextIndex;
 
+		public int FirstIndex;
 		public int LastObservedIndex = -1;
 		public DateTime LastObservedAt;
+		public DateTime NextDiagnostic;
 		public int PhaseAnomalies;
 		public int[] IntervalSamples = [];
 		public float[] PendingIntervals = [];
 	}
-public readonly List<RepeatingAOE> AOEs = new(66); public virtual void Dispose() {}
+public List<RepeatingAOE> AOEs = new(); public readonly DeveloperDiagnostics Diagnostics = new(); public bool RouteDiagnostics { get => Diagnostics.Enabled; set => Diagnostics.Enabled=value; } public virtual void Dispose() {}
 protected AOESequence CreateSequence(AOEShape type, float r1, float r2, IEnumerable<(Vector3 pos, float rot, float delay)> instances)
 	{
 		int count = AOEs.Count;
@@ -223,36 +278,64 @@ protected AOESequence CreateSequence(AOEShape type, float r1, float r2, IEnumera
 			});
 			num += num2;
 		}
-		for (int i = count; i < AOEs.Count; i++) AOEs[i].Repeat = num;
+		foreach (RepeatingAOE item in AOEs.Skip(count))
+		{
+			item.Repeat = num;
+		}
 		return new AOESequence
 		{
 			StartIndex = count,
-			Count = AOEs.Count - count
+			Count = AOEs.Count - count,
+			FirstIndex = -1
 		};
 	}
-protected void UpdateSequence(Vector3 pos, float activateIn, AOESequence[] candidates)
-    {
-        AOESequence? candidate = null;
-        int num = -1;
-        float distance = float.MaxValue;
-        foreach (var sequence in candidates)
-        {
-            int index = FindIndexInSequence(sequence, pos);
-            if (index < 0) continue;
-            float d = Vector3.DistanceSquared(AOEs[sequence.StartIndex + index].Origin, pos);
-            if (d < distance) { distance = d; candidate = sequence; num = index; }
-        }
-        if (candidate == null) return;
+protected void UpdateSequence(Vector3 pos, float activateIn, params AOESequence[] candidates)
+	{
+		UpdateSequence(pos, activateIn, candidates.AsEnumerable());
+	}
+protected void UpdateSequence(Vector3 pos, float activateIn, IEnumerable<AOESequence> candidates)
+	{
+		var matches = candidates.Select(c => (sequence: c, index: FindIndexInSequence(c, pos)))
+			.Where(m => m.index >= 0)
+			.OrderBy(m => Vector3.DistanceSquared(AOEs[m.sequence.StartIndex + m.index].Origin, pos));
+		foreach (var match in matches)
+		{
+			AOESequence candidate = match.sequence;
+			int num = match.index;
+			if (num < 0)
+			{
+				continue;
+			}
+			if (AOEs[candidate.StartIndex].NextActivation == default(DateTime))
+			{
+				Diagnostics.Info($"Starting sequence @ {candidate.StartIndex} from {num}");
+				candidate.FirstIndex = num;
+			}
 			DateTime observed = DateTime.Now;
 			var current = AOEs[candidate.StartIndex + num];
+			if(candidate.StartIndex==46 && RouteDiagnostics) {
+				float gap=candidate.LastObservedIndex<0?float.NaN:(float)(observed-candidate.LastObservedAt).TotalSeconds;
+				Diagnostics.Info($"AOE interval: seq=46 node={num} previous={candidate.LastObservedIndex} observedAt={observed:O} gap={gap:f4} cast={activateIn:f2} delays={string.Join(",",AOEs.Skip(46).Take(candidate.Count).Select(a=>a.SeqDelay.ToString("f4",System.Globalization.CultureInfo.InvariantCulture)))}");
+			}
 			double phaseError = current.NextActivation == default ? 0 :
 				(observed.AddSeconds(activateIn) - current.NextActivation).TotalSeconds;
 			if (current.Repeat > 0) phaseError -= Math.Round(phaseError / current.Repeat) * current.Repeat;
+			Diagnostics.Info($"AOE event seq={candidate.StartIndex} node={num} at={observed:O} cast={activateIn:f2} error={phaseError:f3}");
+			// A single out-of-order effect must not shift every mechanism in a sequence.
+			// Two consecutive large discrepancies permit recovery after a real reset.
 			if (Math.Abs(phaseError) > 0.8 && current.NextActivation != default)
 			{
 				if (++candidate.PhaseAnomalies < 2) return;
 			}
 			candidate.PhaseAnomalies = 0;
+			if (observed >= candidate.NextDiagnostic)
+			{
+				double error = current.NextActivation == default ? double.NaN :
+					(observed.AddSeconds(activateIn) - current.NextActivation).TotalSeconds;
+				if (current.Repeat > 0 && double.IsFinite(error)) error -= Math.Round(error / current.Repeat) * current.Repeat;
+				Diagnostics.Info($"AOE sync seq={candidate.StartIndex} node={num} error={error:f3}s interval={current.SeqDelay:f3}s cycle={current.Repeat:f3}s pos={pos} origin={current.Origin} cast={activateIn:f2}");
+				candidate.NextDiagnostic = observed.AddSeconds(3);
+			}
 			if (activateIn == 0)
 			{
 				if (candidate.IntervalSamples.Length != candidate.Count)
@@ -278,17 +361,15 @@ protected void UpdateSequence(Vector3 pos, float activateIn, AOESequence[] candi
 							{
 								float adjusted = Math.Abs(previous.SeqDelay - candidate.PendingIntervals[index]) > 0.25f
 									? candidate.PendingIntervals[index] : previous.SeqDelay * 0.8f + candidate.PendingIntervals[index] * 0.2f;
+								// Four-point exaflares contain one long gap. Replacing one
+								// interval alone can temporarily erase it or create two gaps.
 								if(candidate.Count==4 && Math.Abs(adjusted-previous.SeqDelay)>0.25f) {
-									bool wholeCycle = true;
-                                    float total = 0;
-                                    foreach (float value in candidate.PendingIntervals)
-                                    { wholeCycle &= value > 0; total += value; }
-                                    wholeCycle &= Math.Abs(total - 6.1f) < 0.2f;
+									bool wholeCycle=candidate.PendingIntervals.All(v=>v>0) &&
+										Math.Abs(candidate.PendingIntervals.Sum()-6.1f)<0.2f;
 									if(wholeCycle) for(int k=0;k<candidate.Count;k++) AOEs[candidate.StartIndex+k].SeqDelay=candidate.PendingIntervals[k];
 								} else previous.SeqDelay=adjusted;
-								float cycle = 0;
-                                for (int k = 0; k < candidate.Count; k++) cycle += AOEs[candidate.StartIndex + k].SeqDelay;
-                                for (int k = 0; k < candidate.Count; k++) AOEs[candidate.StartIndex + k].Repeat = cycle;
+								float cycle = AOEs.Skip(candidate.StartIndex).Take(candidate.Count).Sum(a => a.SeqDelay);
+								foreach (var a in AOEs.Skip(candidate.StartIndex).Take(candidate.Count)) a.Repeat = cycle;
 								candidate.IntervalSamples[index] = 0;
 							}
 						}
@@ -321,6 +402,9 @@ protected void UpdateSequence(Vector3 pos, float activateIn, AOESequence[] candi
 					dateTime = dateTime.AddSeconds(repeatingAOE2.SeqDelay);
 				}
 			}
+			return;
+		}
+		Diagnostics.Info($"Failed to find AOE at {pos}");
 	}
 protected int FindIndexInSequence(AOESequence sequence, Vector3 pos)
 	{
@@ -339,12 +423,6 @@ protected int FindIndexInSequence(AOESequence sequence, Vector3 pos)
 }
 public class Map3 : Map {
 private readonly GameEvents events;
-private readonly AOESequence[] exaflares;
-private readonly AOESequence[] rotating;
-private readonly AOESequence[] rects;
-private readonly AOESequence[] pairs;
-private readonly AOESequence[] lastPairs;
-private readonly AOESequence[] castRects;
 private AOESequence _mech1Rotating;
 private AOESequence _mech2Exaflares;
 private AOESequence _mech3Rotating;
@@ -360,7 +438,6 @@ private AOESequence _mech5PairR2;
 private AOESequence _mech6Exaflare;
 private AOESequence _mech7PairL;
 private AOESequence _mech7PairR;
-
 public Map3(GameEvents events)
 {
 this.events=events; events.ActionEffectEvent += OnActionEffect; events.StartCastEvent += OnStartCast;
@@ -376,37 +453,33 @@ this.events=events; events.ActionEffectEvent += OnActionEffect; events.StartCast
 		_mech5PairL2 = CreatePairsSequence(5f, new Vector3(-10f, 31.39f, 156f), new Vector3(-4.34f, 30.81f, 161.66f));
 		_mech5PairR1 = CreatePairsSequence(5f, new Vector3(10f, 29.95f, 170f), new Vector3(4.34f, 29.37f, 175.66f));
 		_mech5PairR2 = CreatePairsSequence(5f, new Vector3(10f, 31.39f, 156f), new Vector3(2f, 31.39f, 156f));
+		// Observed events place the long interval after +4, not after the last array entry.
 		_mech6Exaflare = CreateSequence(AOEShape.Circle, 6, 0,
 			new float[] { -4, 4, 12, -12 }.Select((x, i) => (new Vector3(x, 33.47f, 145.7f), 0f, i == 1 ? 1.9f : 1.4f)));
 		_mech7PairL = CreatePairsSequence(3f, new Vector3(-6.78f, 35.91f, 136.91f), new Vector3(-3.22f, 36.3f, 135.09f));
 		_mech7PairR = CreatePairsSequence(3f, new Vector3(6.78f, 35.91f, 136.91f), new Vector3(3.22f, 36.3f, 135.09f));
-        exaflares = [_mech2Exaflares, _mech3Exaflares, _mech4Exaflare, _mech6Exaflare];
-        rotating = [_mech1Rotating, _mech3Rotating];
-        rects = [_mech4RectsL, _mech4RectsR, _mech4RectsC];
-        pairs = [_mech5PairL1, _mech5PairL2, _mech5PairR1, _mech5PairR2];
-        lastPairs = [_mech7PairL, _mech7PairR];
-        castRects = [_mech4RectsL, _mech4RectsR];
+
 	}
 private void OnActionEffect(uint actionId, Vector3 casterPos)
 	{
-		
+
 		switch (actionId)
 		{
 		case 34801u:
-			UpdateSequence(casterPos, 0f, exaflares);
+			UpdateSequence(casterPos, 0f, _mech2Exaflares, _mech3Exaflares, _mech4Exaflare, _mech6Exaflare);
 			break;
 		case 34802u:
-			UpdateSequence(casterPos, 0f, rotating);
+			UpdateSequence(casterPos, 0f, _mech1Rotating, _mech3Rotating);
 			break;
 		case 34804u:
 		case 34812u:
-			UpdateSequence(casterPos, 0f, rects);
+			UpdateSequence(casterPos, 0f, _mech4RectsL, _mech4RectsR, _mech4RectsC);
 			break;
 		case 34796u:
-			UpdateSequence(casterPos, 0f, pairs);
+			UpdateSequence(casterPos, 0f, _mech5PairL1, _mech5PairL2, _mech5PairR1, _mech5PairR2);
 			break;
 		case 29795u:
-			UpdateSequence(casterPos, 0f, lastPairs);
+			UpdateSequence(casterPos, 0f, _mech7PairL, _mech7PairR);
 			break;
 		}
 	}
@@ -414,8 +487,8 @@ private void OnStartCast(uint actionId, Vector3 casterPos)
 	{
 		if (actionId == 34812)
 		{
-			
-			UpdateSequence(casterPos, 1f, castRects);
+
+			UpdateSequence(casterPos, 1f, _mech4RectsL, _mech4RectsR);
 		}
 	}
 private AOESequence CreateRotatingSequence(float repeat, float y, float z, params float[] x)

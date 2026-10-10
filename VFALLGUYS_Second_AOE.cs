@@ -2,12 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Numerics;
+using System.Threading;
+using System.Threading.Tasks;
 using Newtonsoft.Json;
 using KodakkuAssist.Script;
 using KodakkuAssist.Module.GameEvent;
 using KodakkuAssist.Module.Draw;
 
-[ScriptType(name: "糖豆人第二关搬水晶画图", territorys: [1165], guid: "3a9a6d4c-5f3c-4d6d-9f0d-100000000011", version: "0.3.0.0", author: "MYY", note: "糖豆人第二关搬水晶画图，绘图可能不准确。纯AI编写,机关默认提前1.5秒显示。")]
+[ScriptType(name: "糖豆人第二关画图", territorys: [1165], guid: "3a9a6d4c-5f3c-4d6d-9f0d-100000000011", version: "0.4.0.0", author: "MYY", note: "糖豆人第二关画图，包含搬水晶相关危险区预测和提丰老师吹飞预警，金蝶跑圈仅做了横杆预测。纯AI编写，反馈请到GITHUB或者你能找到我并私聊我。")]
 public sealed class VFALLGUYS_Second_AOE : IDisposable
 {
     private const string Prefix="VF2AOE_";
@@ -22,6 +24,7 @@ public sealed class VFALLGUYS_Second_AOE : IDisposable
     private DateTime cleanupAt;
     private Hazard? breath;
     private bool active;
+    private CancellationTokenSource barPending=new();
     private const float HazardPreviewSeconds = 1.5f;
     private sealed class Hazard
     {
@@ -41,18 +44,44 @@ public sealed class VFALLGUYS_Second_AOE : IDisposable
     public void Init(ScriptAccessory sa)
     {
         Dispose();
-        lock(gate) { accessory=sa; active=true; textAt=default; drawAt=default; cleanupAt=default; frame=sa.Method.RegistFrameworkUpdateAction(Update,true); }
+        lock(gate) { barPending=new(); accessory=sa; active=true; textAt=default; drawAt=default; cleanupAt=default; frame=sa.Method.RegistFrameworkUpdateAction(Update,true); }
     }
     public void Dispose()
     {
         lock(gate)
         {
             active=false;
+            barPending.Cancel();
             if(frame!=null) accessory?.Method.UnregistFrameworkUpdateAction(frame);
             accessory?.Method.ClearFrameworkUpdateAction(this);
             accessory?.Method.RemoveDraw("^"+Prefix);
             frame=null; hazards.Clear(); expired.Clear(); breath=null;
         }
+    }
+    [ScriptMethod(name:"金蝶跑圈横杆预测",eventType:EventTypeEnum.ActionEffect,
+        eventCondition:["ActionId:regex:^(34797|34798)$"],userControl:true)]
+    public async void PredictRunBar(Event e,ScriptAccessory sa)
+    {
+        Vector3 position;
+        try { position=JsonConvert.DeserializeObject<Vector3>(e["SourcePosition"]); }
+        catch { return; }
+        if(position.X<165 || position.X>235 || position.Z< -160 || position.Z> -90 || MathF.Abs(position.Y-10)>2) return;
+        CancellationToken token;
+        lock(gate) { if(!active) return; token=barPending.Token; }
+        float rotation=(position.X<200?1:-1)*(e["ActionId"]=="34797"?-1:1)*MathF.PI/2;
+        try
+        {
+            // Join the next alternating preview after the current omen expires.
+            await Task.Delay(350,token);
+            await sa.Method.RunOnMainThreadAsync(()=>
+            {
+                if(!token.IsCancellationRequested)
+                    sa.Method.VfxMethod.CreateOmen(532,new Vector3(8,0.01f,8),position,rotation,
+                        new Vector4(1,0.12f,0.08f,0.44f),4650);
+            });
+        }
+        catch(OperationCanceledException) { }
+        catch(Exception ex) { sa.Log.Error("VF2 bar: "+ex.Message); }
     }
     [ScriptMethod(name:"机关结算同步",eventType:EventTypeEnum.ActionEffect,eventCondition:["ActionId:regex:^(34774|34799|34800)$"],userControl:false)]
     public void Effect(Event e,ScriptAccessory sa)=>Observe(e,sa,false);

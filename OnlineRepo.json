@@ -1,12 +1,12 @@
 [
   {
-    "Name": "糖豆人第二关搬水晶画图",
+    "Name": "糖豆人第二关画图",
     "Guid": "3a9a6d4c-5f3c-4d6d-9f0d-100000000011",
-    "Version": "0.3.0.0",
+    "Version": "0.4.0.0",
     "Author": "MYY",
     "DownloadUrl": "https://raw.githubusercontent.com/BaWWorld/KodakkuScripts/main/VFALLGUYS_Second_AOE.cs",
-    "Note": "糖豆人第二关搬水晶画图，绘图可能不准确。纯AI编写,机关默认提前1.5秒显示。",
-    "UpdateTime": "2026-10-10T08:08:40Z",
+    "Note": "糖豆人第二关画图，包含搬水晶相关危险区预测和提丰老师吹飞预警，金蝶跑圈仅做了横杆预测。纯AI编写，反馈请到GITHUB或者你能找到我并私聊我。",
+    "UpdateTime": "2026-10-10T14:52:17Z",
     "TerritoryIds": [
       1165
     ]

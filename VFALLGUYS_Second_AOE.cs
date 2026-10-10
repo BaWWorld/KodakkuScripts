@@ -9,7 +9,7 @@ using KodakkuAssist.Script;
 using KodakkuAssist.Module.GameEvent;
 using KodakkuAssist.Module.Draw;
 
-[ScriptType(name: "糖豆人第二关画图", territorys: [1165], guid: "3a9a6d4c-5f3c-4d6d-9f0d-100000000011", version: "0.4.0.0", author: "MYY", note: "糖豆人第二关画图，包含搬水晶相关危险区预测和提丰老师吹飞预警，金蝶跑圈仅做了横杆预测。纯AI编写，反馈请到GITHUB或者你能找到我并私聊我。")]
+[ScriptType(name: "糖豆人第二关画图", territorys: [1165], guid: "3a9a6d4c-5f3c-4d6d-9f0d-100000000011", version: "0.5.0.0", author: "MYY", note: "糖豆人第二关画图，包含搬水晶相关危险区预测和提丰老师吹飞预警，金蝶跑圈仅做了横杆预测。纯AI编写，反馈请到GITHUB或者你能找到我并私聊我。")]
 public sealed class VFALLGUYS_Second_AOE : IDisposable
 {
     private const string Prefix="VF2AOE_";
@@ -20,7 +20,6 @@ public sealed class VFALLGUYS_Second_AOE : IDisposable
     private ScriptAccessory? accessory;
     private string? frame;
     private DateTime textAt;
-    private DateTime drawAt;
     private DateTime cleanupAt;
     private Hazard? breath;
     private bool active;
@@ -32,19 +31,18 @@ public sealed class VFALLGUYS_Second_AOE : IDisposable
         public string DrawName="";
         public Vector3 Position, End;
         public float Rotation;
-        public DateTime Last, Next, CastAt;
+        public DateTime Last, Next;
         public DateTime Observed;
         public double Cycle;
         public int Samples;
         public bool Warned;
-        public DateTime DrawingUntil;
     }
     [UserSetting("提丰老师吹气提前提醒开关")] public bool EnableBreathReminder {get;set;}=true;
     [UserSetting("吹气前X秒提醒（0.1至5秒）")] public float BreathWarningSeconds {get;set;}=2;
     public void Init(ScriptAccessory sa)
     {
         Dispose();
-        lock(gate) { barPending=new(); accessory=sa; active=true; textAt=default; drawAt=default; cleanupAt=default; frame=sa.Method.RegistFrameworkUpdateAction(Update,true); }
+        lock(gate) { barPending=new(); accessory=sa; active=true; textAt=default; cleanupAt=default; frame=sa.Method.RegistFrameworkUpdateAction(Update,true); }
     }
     public void Dispose()
     {
@@ -77,7 +75,7 @@ public sealed class VFALLGUYS_Second_AOE : IDisposable
             {
                 if(!token.IsCancellationRequested)
                     sa.Method.VfxMethod.CreateOmen(532,new Vector3(8,0.01f,8),position,rotation,
-                        new Vector4(1,0.12f,0.08f,0.44f),4650);
+                        new Vector4(1,0.12f,0.08f,0.80f),4650);
             });
         }
         catch(OperationCanceledException) { }
@@ -115,7 +113,7 @@ public sealed class VFALLGUYS_Second_AOE : IDisposable
             {
                 Float(e["DurationMilliseconds"],out var duration);
                 if(duration<=0) duration=3200;
-                h.CastAt=now.AddMilliseconds(duration); h.Next=h.CastAt; breath=h;
+                h.Next=now.AddMilliseconds(duration); breath=h;
             }
             else
             {
@@ -125,13 +123,32 @@ public sealed class VFALLGUYS_Second_AOE : IDisposable
                     double interval=(now-h.Last).TotalSeconds;
                     if(interval>=0.5 && interval<=12) { h.Cycle=h.Samples==0?interval:h.Cycle*0.8+interval*0.2; h.Samples++; }
                 }
-                h.Last=now; h.CastAt=default; h.Next=h.Cycle>0?now.AddSeconds(h.Cycle):default; h.Warned=false;
+                h.Last=now; h.Next=h.Cycle>0?now.AddSeconds(h.Cycle):default; h.Warned=false;
                 if(id==34800) breath=h;
+                else ScheduleHazard(h,sa);
             }
         }
     }
+    private static void ScheduleHazard(Hazard h,ScriptAccessory sa)
+    {
+        if(h.Cycle<=0) return;
+        var dp=sa.Data.GetDefaultDrawProperties(); dp.Name=h.DrawName;
+        // 与原版保持相同几何：糖果串沿 EffectPosition 绘制，拳头沿 SourceRotation。
+        dp.Position=h.Position; dp.Rotation=h.Action==34774?0:h.Rotation; dp.FixRotation=true;
+        var delta=h.End-h.Position;
+        dp.Scale=h.Action==34799?new Vector2(4,4):new Vector2(3,MathF.Sqrt(delta.X*delta.X+delta.Z*delta.Z));
+        if(h.Action==34774) dp.TargetPosition=h.End;
+        var color=sa.Data.DefaultDangerColor;
+        dp.Color=new Vector4(color.X,color.Y,color.Z,0.80f);
+        // 一次事件只安排一个预警窗口，交由 KDY 管理延迟和销毁，不逐帧重复创建。
+        double preview=Math.Min(HazardPreviewSeconds,h.Cycle);
+        dp.Delay=Math.Max(0,(int)((h.Cycle-preview)*1000));
+        dp.DestoryAt=Math.Max(1,(int)(preview*1000));
+        sa.Method.SendDraw(DrawModeEnum.Default,h.Action==34799?DrawTypeEnum.Straight:DrawTypeEnum.Rect,dp);
+    }
     private void Update()
     {
+        // 保留原版提丰提醒和数据清理。此回调不绘图，也不滚动预测下一周期。
         lock(gate)
         {
             if(!active || accessory==null || DateTime.Now<textAt) return;
@@ -164,32 +181,6 @@ public sealed class VFALLGUYS_Second_AOE : IDisposable
                     if(ReferenceEquals(breath,h)) breath=null;
                     hazards.Remove(key);
                 }
-            }
-            if(now<drawAt) return;
-            drawAt=now.AddMilliseconds(100);
-            foreach(var item in hazards)
-            {
-                var h=item.Value;
-                if(h.Action is 34800 or 34716) continue;
-                // First observation anchors the measured default period; later observations refine it.
-                if(h.Last==default || h.Next==default || h.Cycle<=0) continue;
-                if(h.Last!=default && now-h.Last>TimeSpan.FromSeconds(15)) continue;
-                double remaining=h.Next==default?double.PositiveInfinity:(h.Next-now).TotalSeconds;
-                if(h.CastAt==default && h.Cycle>0 && remaining<0) remaining=(remaining%h.Cycle+h.Cycle)%h.Cycle;
-                if(remaining<=0 || remaining>HazardPreviewSeconds) continue;
-                // One VFX per preview window; repeated creation restarts its appearance animation.
-                if(now<h.DrawingUntil) continue;
-                var dp=sa.Data.GetDefaultDrawProperties(); dp.Name=h.DrawName;
-                // TargetPosition already resolves the bearing; Rotation is an additive offset.
-                dp.Position=h.Position; dp.Rotation=h.Action==34774?0:h.Rotation; dp.FixRotation=true;
-                var delta=h.End-h.Position;
-                dp.Scale=h.Action==34799?new Vector2(4,4):new Vector2(3,MathF.Sqrt(delta.X*delta.X+delta.Z*delta.Z));
-                if(h.Action==34774) dp.TargetPosition=h.End;
-                var color=sa.Data.DefaultDangerColor;
-                dp.Color=new Vector4(color.X,color.Y,color.Z,0.44f);
-                dp.DestoryAt=Math.Max(1,(int)(remaining*1000));
-                sa.Method.SendDraw(DrawModeEnum.Default,h.Action==34799?DrawTypeEnum.Straight:DrawTypeEnum.Rect,dp);
-                h.DrawingUntil=now.AddSeconds(remaining);
             }
         }
     }

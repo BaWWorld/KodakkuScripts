@@ -9,7 +9,7 @@ using System;
 namespace VF3_AOE
 {
 
-[ScriptType(name: "糖豆人第三关画图", territorys: [1165], guid: "3a9a6d4c-5f3c-4d6d-9f0d-100000000001", version: "0.3.0.0", author: "MYY", note: "糖豆人第三关画图，基于VFALLGUYS的AOE绘图数据进行编写，纯AI编写。", updateInfo: "尝试不再依赖循环绘图。尝试优化代码。")]
+[ScriptType(name: "糖豆人第三关画图", territorys: [1165], guid: "3a9a6d4c-5f3c-4d6d-9f0d-100000000001", version: "0.3.0.1", author: "MYY", note: "糖豆人第三关画图，基于VFALLGUYS的AOE绘图数据进行编写，纯AI编写。", updateInfo: "尝试不再依赖循环绘图。尝试优化代码。")]
 public class VFALLGUYS_Third_AOE : IDisposable
 {
     private const string Prefix = "VFALLGUYS_Third_AOE_";
@@ -26,8 +26,8 @@ public class VFALLGUYS_Third_AOE : IDisposable
     private readonly DateTime[] firstLast=new DateTime[2];
     private readonly double[] firstCycle={2.56,2.56};
     private readonly int[] firstSequence=new int[2];
-    [UserSetting("AOE 预览秒数（0.3—8）")] public float PreviewSeconds { get; set; } = 2.5f;
-    [UserSetting("输出机制同步日志")] public bool DebugLogging { get; set; } = false;
+    public float PreviewSeconds { get; set; } = 2.5f;
+    public bool DebugLogging { get; set; } = false;
 
     public void Init(ScriptAccessory sa)
     {

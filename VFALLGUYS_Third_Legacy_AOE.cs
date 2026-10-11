@@ -9,7 +9,7 @@ using System;
 namespace VF3_AOE
 {
 
-[ScriptType(name: "糖豆人第三关画图", territorys: [1165], guid: "3a9a6d4c-5f3c-4d6d-9f0d-100000000001", version: "0.3.0.1", author: "MYY", note: "糖豆人第三关画图，基于VFALLGUYS的AOE绘图数据进行编写，纯AI编写。", updateInfo: "尝试不再依赖循环绘图。尝试优化代码。")]
+[ScriptType(name: "糖豆人第三关画图", territorys: [1165], guid: "3a9a6d4c-5f3c-4d6d-9f0d-100000000001", version: "0.3.0.2", author: "MYY", note: "糖豆人第三关画图，基于VFALLGUYS的AOE绘图数据进行编写，纯AI编写。", updateInfo: "尝试不再依赖循环绘图。尝试优化代码。尝试修复清理绘图代码。")]
 public class VFALLGUYS_Third_AOE : IDisposable
 {
     private const string Prefix = "VFALLGUYS_Third_AOE_";
@@ -44,9 +44,11 @@ public class VFALLGUYS_Third_AOE : IDisposable
     {
         lock (gate)
         {
+            var sa = accessory;
+            accessory = null;
             map?.Dispose(); map = null;
-            accessory?.Method.RemoveDraw("^" + Prefix);
-            accessory?.Method.ClearFrameworkUpdateAction(this);
+            sa?.Method.RemoveDraw("^" + Prefix);
+            sa?.Method.ClearFrameworkUpdateAction(this);
             drawings.Clear(); effectsSeen.Clear();
         }
     }
